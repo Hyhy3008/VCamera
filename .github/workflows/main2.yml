@@ -1,0 +1,119 @@
+name: Android CI Build
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up JDK 17
+      uses: actions/setup-java@v4
+      with:
+        java-version: '17'
+        distribution: 'temurin'
+
+    - name: Fix Gradle Wrapper structure
+      run: |
+        echo "=== Fixing Gradle Wrapper ==="
+        mkdir -p gradle/wrapper
+        
+        # Di chuyển file từ root vào gradle/wrapper/
+        if [ -f "gradle-wrapper.jar" ]; then
+          mv gradle-wrapper.jar gradle/wrapper/
+          echo "✅ Moved gradle-wrapper.jar"
+        fi
+        
+        if [ -f "gradle-wrapper.properties" ]; then
+          mv gradle-wrapper.properties gradle/wrapper/
+          echo "✅ Moved gradle-wrapper.properties"
+        fi
+        
+        echo "Current gradle wrapper structure:"
+        ls -la gradle/wrapper/ || echo "gradle/wrapper/ not found"
+
+    - name: Remove missing opensdk module
+      run: |
+        echo "=== Removing missing opensdk dependency ==="
+        
+        # Backup files
+        cp settings.gradle settings.gradle.bak
+        cp app/build.gradle app/build.gradle.bak
+        
+        # Xóa opensdk từ settings.gradle
+        sed -i "/include.*:opensdk/d" settings.gradle
+        
+        # Xóa opensdk dependency từ app/build.gradle
+        sed -i "/implementation project(':opensdk')/d" app/build.gradle
+        sed -i "/implementation 'virtual.camera.camera:camera:/d" app/build.gradle
+        
+        echo "=== Updated settings.gradle ==="
+        cat settings.gradle
+        
+        echo -e "\n=== Checking app/build.gradle ==="
+        grep "dependencies {" -A 30 app/build.gradle | head -n 35
+
+    - name: Setup Gradle
+      uses: gradle/actions/setup-gradle@v4
+
+    - name: Grant execute permission for gradlew
+      run: chmod +x gradlew
+
+    - name: Clean project
+      run: ./gradlew clean --stacktrace
+
+    - name: Build Debug APK
+      run: ./gradlew assembleDebug --stacktrace --no-daemon
+
+    - name: Build Release APK (unsigned)
+      continue-on-error: true
+      run: ./gradlew assembleRelease --stacktrace --no-daemon
+
+    - name: List build outputs
+      if: always()
+      run: |
+        echo "=== Build Outputs ==="
+        find app/build/outputs -type f -name "*.apk" -exec ls -lh {} \; || echo "No APK found"
+
+    - name: Upload Debug APK
+      uses: actions/upload-artifact@v4
+      if: success()
+      with:
+        name: VCamera-debug
+        path: app/build/outputs/apk/debug/*.apk
+        retention-days: 14
+
+    - name: Upload Release APK
+      uses: actions/upload-artifact@v4
+      if: success()
+      continue-on-error: true
+      with:
+        name: VCamera-release
+        path: app/build/outputs/apk/release/*.apk
+        retention-days: 30
+
+    - name: Build summary
+      if: always()
+      run: |
+        echo "### Build Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        if [ -d "app/build/outputs/apk/debug" ]; then
+          echo "#### Debug APK" >> $GITHUB_STEP_SUMMARY
+          find app/build/outputs/apk/debug -name "*.apk" -exec ls -lh {} \; >> $GITHUB_STEP_SUMMARY || true
+        fi
+        
+        if [ -d "app/build/outputs/apk/release" ]; then
+          echo "#### Release APK" >> $GITHUB_STEP_SUMMARY
+          find app/build/outputs/apk/release -name "*.apk" -exec ls -lh {} \; >> $GITHUB_STEP_SUMMARY || true
+        fi
