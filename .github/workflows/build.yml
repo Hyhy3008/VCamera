@@ -1,0 +1,77 @@
+name: Android CI Build
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up JDK 17
+      uses: actions/setup-java@v4
+      with:
+        java-version: '17'
+        distribution: 'temurin'
+        cache: gradle
+
+    - name: Fix Gradle Wrapper structure
+      run: |
+        echo "=== Fixing Gradle Wrapper structure ==="
+        mkdir -p gradle/wrapper
+        
+        # Di chuyển file từ root vào gradle/wrapper/
+        if [ -f "gradle-wrapper.jar" ]; then
+          mv gradle-wrapper.jar gradle/wrapper/
+          echo "✅ Moved gradle-wrapper.jar"
+        fi
+        
+        if [ -f "gradle-wrapper.properties" ]; then
+          mv gradle-wrapper.properties gradle/wrapper/
+          echo "✅ Moved gradle-wrapper.properties"
+        fi
+        
+        # Kiểm tra kết quả
+        ls -la gradle/wrapper/
+
+    - name: Grant execute permission for gradlew
+      run: chmod +x gradlew
+
+    - name: Clean build
+      run: ./gradlew clean --stacktrace
+
+    - name: Build Debug APK
+      run: ./gradlew assembleDebug --stacktrace --no-daemon
+
+    - name: Build Release APK
+      run: ./gradlew assembleRelease --stacktrace --no-daemon
+      continue-on-error: true
+
+    - name: Upload Debug APK
+      uses: actions/upload-artifact@v4
+      with:
+        name: vcamera-debug
+        path: app/build/outputs/apk/debug/*.apk
+        retention-days: 7
+
+    - name: Upload Release APK
+      uses: actions/upload-artifact@v4
+      if: success()
+      with:
+        name: vcamera-release
+        path: app/build/outputs/apk/release/*.apk
+        retention-days: 30
+      continue-on-error: true
+
+    - name: Display build summary
+      if: always()
+      run: |
+        echo "=== Build Summary ==="
+        find app/build/outputs/apk -name "*.apk" -exec ls -lh {} \; || echo "No APK found"
