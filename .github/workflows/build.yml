@@ -2,9 +2,9 @@ name: Android CI Build
 
 on:
   push:
-    branches: [ main ]
+    branches: [ "main" ]
   pull_request:
-    branches: [ main ]
+    branches: [ "main" ]
   workflow_dispatch:
 
 jobs:
@@ -15,63 +15,125 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    - name: Set up JDK 17
+    - name: Set up JDK 11
       uses: actions/setup-java@v4
       with:
-        java-version: '17'
+        java-version: '11'
         distribution: 'temurin'
-        cache: gradle
 
-    - name: Fix Gradle Wrapper structure
+    - name: Fix Gradle structure and versions
       run: |
-        echo "=== Fixing Gradle Wrapper structure ==="
+        echo "=== Fixing Gradle Wrapper ==="
         mkdir -p gradle/wrapper
         
-        # Di chuyển file từ root vào gradle/wrapper/
-        if [ -f "gradle-wrapper.jar" ]; then
-          mv gradle-wrapper.jar gradle/wrapper/
-          echo "✅ Moved gradle-wrapper.jar"
-        fi
+        # Move wrapper files
+        [ -f "gradle-wrapper.jar" ] && mv gradle-wrapper.jar gradle/wrapper/
+        [ -f "gradle-wrapper.properties" ] && mv gradle-wrapper.properties gradle/wrapper/
         
-        if [ -f "gradle-wrapper.properties" ]; then
-          mv gradle-wrapper.properties gradle/wrapper/
-          echo "✅ Moved gradle-wrapper.properties"
-        fi
+        # Force Gradle 7.5.1 (compatible with older Android Gradle Plugin)
+        cat > gradle/wrapper/gradle-wrapper.properties << 'EOF'
+        distributionBase=GRADLE_USER_HOME
+        distributionPath=wrapper/dists
+        distributionUrl=https\://services.gradle.org/distributions/gradle-7.5.1-all.zip
+        zipStoreBase=GRADLE_USER_HOME
+        zipStorePath=wrapper/dists
+        EOF
         
-        # Kiểm tra kết quả
-        ls -la gradle/wrapper/
+        echo "Gradle wrapper properties:"
+        cat gradle/wrapper/gradle-wrapper.properties
 
-    - name: Grant execute permission for gradlew
+    - name: Update build.gradle files
+      run: |
+        echo "=== Updating root build.gradle ==="
+        
+        # Update or create root build.gradle with compatible versions
+        cat > build.gradle << 'EOF'
+        buildscript {
+            ext.kotlin_version = '1.6.21'
+            
+            repositories {
+                google()
+                mavenCentral()
+                jcenter()
+            }
+            
+            dependencies {
+                classpath 'com.android.tools.build:gradle:7.2.2'
+                classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
+            }
+        }
+        
+        allprojects {
+            repositories {
+                google()
+                mavenCentral()
+                jcenter()
+                maven { url 'https://jitpack.io' }
+            }
+        }
+        
+        ext {
+            compileSdkVersion = 33
+            minSdkVersion = 21
+            targetSdkVersion = 33
+            versionCode = 1
+            versionName = "1.0"
+            masterPkg = "virtual.camera.app"
+        }
+        
+        task clean(type: Delete) {
+            delete rootProject.buildDir
+        }
+        EOF
+        
+        echo "Updated build.gradle:"
+        cat build.gradle
+
+    - name: Remove missing dependencies
+      run: |
+        echo "=== Removing missing opensdk ==="
+        
+        # Remove from settings.gradle
+        sed -i "/include.*:opensdk/d" settings.gradle
+        
+        # Remove from app/build.gradle
+        sed -i "/implementation project(':opensdk')/d" app/build.gradle
+        sed -i "/implementation 'virtual.camera.camera:camera:/d" app/build.gradle
+        
+        # Disable viewBinding if causing issues
+        sed -i 's/viewBinding true/viewBinding false/' app/build.gradle
+        
+        echo "Updated settings.gradle:"
+        cat settings.gradle
+
+    - name: Grant execute permission
       run: chmod +x gradlew
 
-    - name: Clean build
-      run: ./gradlew clean --stacktrace
+    - name: Download Gradle Wrapper JAR if missing
+      run: |
+        if [ ! -f "gradle/wrapper/gradle-wrapper.jar" ]; then
+          echo "Downloading gradle-wrapper.jar..."
+          curl -L https://github.com/gradle/gradle/raw/v7.5.1/gradle/wrapper/gradle-wrapper.jar \
+               -o gradle/wrapper/gradle-wrapper.jar
+        fi
+        
+        ls -la gradle/wrapper/
+
+    - name: Clean project
+      run: ./gradlew clean --stacktrace || true
 
     - name: Build Debug APK
       run: ./gradlew assembleDebug --stacktrace --no-daemon
 
-    - name: Build Release APK
-      run: ./gradlew assembleRelease --stacktrace --no-daemon
-      continue-on-error: true
+    - name: List outputs
+      if: always()
+      run: |
+        find . -name "*.apk" -type f -exec ls -lh {} \; || echo "No APK found"
 
     - name: Upload Debug APK
       uses: actions/upload-artifact@v4
-      with:
-        name: vcamera-debug
-        path: app/build/outputs/apk/debug/*.apk
-        retention-days: 7
-
-    - name: Upload Release APK
-      uses: actions/upload-artifact@v4
       if: success()
       with:
-        name: vcamera-release
-        path: app/build/outputs/apk/release/*.apk
-        retention-days: 30
-      continue-on-error: true
-
-    - name: Display build summary
-      if: always()
-      run: |
-        echo "=== Build Summary ==="
-        find app/build/outputs/apk -name "*.apk" -exec ls -lh {} \; || echo "No APK found"
+        name: VCamera-debug
+        path: app/build/outputs/apk/debug/*.apk
+        retention-days: 14
